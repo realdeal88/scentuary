@@ -1,0 +1,66 @@
+{
+  "name": "scentuary",
+  "version": "0.1.0",
+  "description": "An immersive, scroll-driven scent journey for perfume pages — a winding path that draws with the scroll while the field recolours to each note's own tone. React.",
+  "author": "Sajad Abdolvandi",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "perfume",
+    "fragrance",
+    "scent",
+    "perfumery",
+    "react",
+    "gsap",
+    "scroll",
+    "scrollytelling",
+    "animation",
+    "notes"
+  ],
+  "peerDependencies": {
+    "gsap": ">=3.13",
+    "motion": ">=11",
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "devDependencies": {
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "gsap": "^3.13.0",
+    "motion": "^12.38.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SajadAbdolvandiii/scentuary.git"
+  },
+  "homepage": "https://github.com/SajadAbdolvandiii/scentuary#readme",
+  "bugs": {
+    "url": "https://github.com/SajadAbdolvandiii/scentuary/issues"
+  }
+}
