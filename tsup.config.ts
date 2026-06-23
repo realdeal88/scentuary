@@ -11,7 +11,6 @@ export default defineConfig({
     "react",
     "react-dom",
     "gsap",
-    "gsap/DrawSVGPlugin",
     "gsap/ScrollTrigger",
     "motion",
     "motion/react",

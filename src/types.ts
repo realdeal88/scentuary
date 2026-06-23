@@ -6,8 +6,9 @@ export type Tone = { art: string; glow: string; tint: string };
 
 export type ScentNote = {
   name: string;
-  /** Secondary line under the name (e.g. a translation or latin name). */
-  subtitle?: string;
+  /** Secondary line under the name (e.g. a translation or latin name).
+   *  Accepts a ReactNode so consumers can inject styled/RTL/bilingual text. */
+  subtitle?: ReactNode;
   /** Family key — selects the eyebrow word and the default glyph. */
   family?: string;
   /** Override the auto-assigned tone for this note. */
@@ -24,9 +25,9 @@ export type ScentTier = {
   /** Numeral shown in the chapter medallion (defaults I / II / III). */
   roman?: string;
   label: string;
-  subtitle?: string;
-  caption?: string;
-  captionSub?: string;
+  /** Accept ReactNode so consumers can inject styled/RTL/bilingual lines. */
+  subtitle?: ReactNode;
+  caption?: ReactNode;
 };
 
 export type ScentuaryTheme = {

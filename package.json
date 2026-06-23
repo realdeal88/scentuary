@@ -1,7 +1,7 @@
 {
   "name": "scentuary",
   "version": "0.1.0",
-  "description": "An immersive, scroll-driven scent journey for perfume pages — a winding path that draws with the scroll while the field recolours to each note's own tone. React.",
+  "description": "A pinned, scroll-driven descent through a fragrance's notes — the page holds still while each note blooms in its own tone, a thread draws downward, and the field recolours. React.",
   "author": "Sajad Abdolvandi",
   "license": "MIT",
   "type": "module",

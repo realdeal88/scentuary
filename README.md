@@ -1,18 +1,20 @@
 # Scentuary
 
-**An immersive, scroll-driven scent journey for perfume pages.**
+**A pinned, scroll-driven descent through a fragrance's notes.**
 
-A winding path draws itself as you scroll, and the whole field recolours to each
-note's own tone — top, heart, base — turning a flat list of ingredients into a
-descent through the fragrance. Built for React, themeable, fully localisable, and
-free of any CSS framework.
+The stage pins — the page holds still — while each note rises into the frame,
+blooms in its own colour, and dissolves into the next. The whole field recolours
+to each note's tone (top, heart, base), a thread of light draws downward as you
+descend, and a bead travels it. Not a list that scrolls past: a place you sink
+through. Built for React, themeable, fully localisable, and free of any CSS
+framework.
 
 ```bash
 npm install scentuary gsap motion
 ```
 
-> `react`, `react-dom`, `gsap` (≥ 3.13 — DrawSVG is free since then) and `motion`
-> are peer dependencies.
+> `react`, `react-dom`, `gsap` (≥ 3.12, for `ScrollTrigger`) and `motion` are
+> peer dependencies. No paid GSAP plugins required.
 
 ## Usage
 
@@ -34,18 +36,19 @@ export default function PerfumePage() {
 }
 ```
 
-That's it — the component owns the full-height scroll experience.
+That's it — the component owns the full pinned scroll experience.
 
 ## How it works
 
-- **Measured path.** The serpentine is generated in real pixel space from the
-  actual scene centres (via a `ResizeObserver`), so GSAP's DrawSVG can measure
-  and draw it on scroll at any viewport size.
-- **Recolouring field.** A single sticky layer sits behind the content and eases
-  to each note's `tint` + `glow` as that note reaches centre stage — no two
-  neighbours alike.
-- **Reduced motion.** Honours `prefers-reduced-motion`: the path is shown fully
-  drawn and the scenes settle without animation.
+- **Pinned stage.** The section pins for the length of the descent; the page
+  holds still while the scroll scrubs a single timeline. Each note is a frame
+  that rises in, dwells crisp, then dissolves into the next.
+- **Recolouring field.** A layer behind the content eases to each note's `tint`
+  + `glow` as that note takes the frame — no two neighbours alike.
+- **Drawing thread.** A line of light fills downward with your progress and a
+  bead rides it, picking up each note's colour as you pass.
+- **Reduced motion.** Honours `prefers-reduced-motion`: the descent renders as a
+  calm, fully-visible vertical reading with no pin and no animation.
 
 ## Props
 
@@ -66,8 +69,9 @@ typefaces.
 ### Localisation
 
 `labels` carries every string the component renders (tier names, the eyebrow,
-the scroll cue, the per-family eyebrow words), so it works in any language —
-including RTL, by passing pre-shaped strings and an RTL font.
+the scroll cue, the per-family eyebrow words), and the text fields accept any
+`ReactNode` — so it works in any language, including bilingual or RTL layouts
+(pass a styled element with the right `dir` and font).
 
 ### Custom note art
 
