@@ -22,8 +22,6 @@ export type ScentNotes = {
 };
 
 export type ScentTier = {
-  /** Numeral shown in the chapter medallion (defaults I / II / III). */
-  roman?: string;
   label: string;
   /** Accept ReactNode so consumers can inject styled/RTL/bilingual lines. */
   subtitle?: ReactNode;

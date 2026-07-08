@@ -36,17 +36,14 @@ export const DEFAULT_LABELS: ScentuaryLabels = {
   scrollCue: "Scroll to descend",
   tiers: {
     top: {
-      roman: "I",
       label: "Top",
       caption: "First breath. The opening seconds.",
     },
     heart: {
-      roman: "II",
       label: "Heart",
       caption: "The soul of the scent — what stays.",
     },
     base: {
-      roman: "III",
       label: "Base",
       caption: "What lives in the skin, long after.",
     },
