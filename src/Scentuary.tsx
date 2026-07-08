@@ -1,6 +1,7 @@
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useSyncExternalStore,
   type CSSProperties,
@@ -9,7 +10,6 @@ import {
 import { motion } from "motion/react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
-import { DrawSVGPlugin } from "gsap/DrawSVGPlugin";
 import type {
   ScentNote,
   ScentTier,
@@ -20,27 +20,37 @@ import type {
 import { mergeLabels, mergeTheme } from "./tones";
 import { DefaultNoteArt } from "./DefaultNoteArt";
 import { serpentine } from "./serpentine";
-import { lerpColor } from "./color";
 
 if (typeof window !== "undefined") {
-  gsap.registerPlugin(ScrollTrigger, DrawSVGPlugin);
+  gsap.registerPlugin(ScrollTrigger);
   // "load" fires only once every image/font on the page has finished — on a
-  // media-heavy product page that can be many seconds after the user has
-  // already scrolled deep into this section. GSAP's default auto-refresh-on-
-  // "load" then recomputes trigger start/end positions mid-scroll, which
-  // used to visibly un-pin and re-land an older pinned version of this
-  // component on an earlier note before continuing. Nothing here pins
-  // anymore, but a late refresh could still jump the road-draw/field-tone
-  // progress against a moving target, so the same guard stays: keep the
-  // DOMContentLoaded/resize/visibilitychange refreshes, drop the late "load".
+  // media-heavy product page that can be seconds after the user has already
+  // scrolled in, and a late auto-refresh would then recompute the trigger
+  // against a moved target and jump the draw. Keep the DOM/resize refreshes,
+  // drop the late "load"; a single fonts.ready refresh (below) covers reflow.
   ScrollTrigger.config({
     ignoreMobileResize: true,
     autoRefreshEvents: "DOMContentLoaded,resize,visibilitychange",
   });
 }
 
+// useLayoutEffect on the client (measure before paint, no road flash); plain
+// useEffect on the server so SSR never warns. The branch is on a value that
+// never changes within a session, so it's a stable hook, not a conditional one.
+const useIsoLayoutEffect =
+  typeof window !== "undefined" ? useLayoutEffect : useEffect;
+
 const EASE_OUT_EXPO: [number, number, number, number] = [0.22, 1, 0.36, 1];
-const ROAD_WIDTH = "clamp(2.75rem, 6vw, 5.5rem)";
+
+// Road bend anchors as a percentage of the (wide) road column's width. The
+// path is generated in real pixels at measure time so the SVG's viewBox
+// matches its box 1:1 — uniform scale, so the stroke never distorts and no
+// vector-effect / preserveAspectRatio trickery is needed. A generous swing so
+// it reads as a winding ROAD, not a rail.
+const BEND_X_LEFT = 28;
+const BEND_X_RIGHT = 72;
+const PLACEHOLDER_H = 1000;
+const BEAD_SAMPLES = 240;
 
 type Labels = ReturnType<typeof mergeLabels>;
 type ArtFn = (
@@ -51,8 +61,8 @@ type Side = "left" | "right";
 
 const TIER_ORDER = ["top", "heart", "base"] as const;
 
-/** One stop along the descending road — either a chapter marker straddling
- *  the path, or a note station set off to one side of it. */
+/** One stop along the descending road — a chapter marker straddling the path,
+ *  or a note station set to one side of it. */
 type Stop =
   | { kind: "tier"; key: (typeof TIER_ORDER)[number]; tier: ScentTier }
   | {
@@ -63,14 +73,15 @@ type Stop =
       side: Side;
     };
 
-/** The field's atmosphere at one point in the descent, plus how much of the
- *  scroll distance that point should claim — used to ease the background
- *  continuously from tier to tier rather than cutting hard at each chapter. */
+/** The field's atmosphere for one tier of the descent: a rich wash colour
+ *  (`glow`) over a deep base (`tint`), and how much scroll distance the band
+ *  claims — used to cross-fade the full-viewport field from one tier's colour
+ *  world to the next. */
 type Band = { tint: string; glow: string; weight: number };
 
-/** True on a viewport wide enough for the fuller note-glyph scale. Reads
- *  live so it reacts to resizes; defaults to the mobile size so SSR and
- *  first paint never render an oversized glyph that then shrinks. */
+/** True on a viewport wide enough for the fuller note-glyph scale. Reads live
+ *  so it reacts to resizes; defaults to the mobile size so SSR and first paint
+ *  never render an oversized glyph that then shrinks. */
 function useIsDesktop(): boolean {
   return useSyncExternalStore(
     (onChange) => {
@@ -84,11 +95,10 @@ function useIsDesktop(): boolean {
 }
 
 /** Mirrors the OS `prefers-reduced-motion` preference. Reads matchMedia
- *  directly rather than Motion's own `useReducedMotion` (which returns
- *  `null` during SSR, so the server and the client's first paint can
- *  disagree on which branch to render — a hydration mismatch). Defaulting
- *  the server/first-paint snapshot to `false` and syncing right after,
- *  same idiom as `useIsDesktop` above, keeps the two in lockstep. */
+ *  directly rather than Motion's `useReducedMotion` (which returns `null`
+ *  during SSR, so server and first client paint can disagree — a hydration
+ *  mismatch). Defaulting the server/first-paint snapshot to `false` and
+ *  syncing right after keeps the two in lockstep. */
 function usePrefersReducedMotion(): boolean {
   return useSyncExternalStore(
     (onChange) => {
@@ -104,13 +114,18 @@ function usePrefersReducedMotion(): boolean {
 /**
  * Scentuary — a scroll-drawn descent through a fragrance's notes.
  *
- * A central road draws itself downward as the page scrolls — you travel
- * down it, not sideways past it. Each tier opens with a plain chapter
- * marker straddling the road; each note is a station set to one side of it,
- * alternating left and right, rising into place as it's reached. The field
- * behind everything eases continuously from one tier's tone to the next.
- * Themeable, fully localisable, framework-CSS-free, and dependent only on
- * `gsap` + `motion`.
+ * A wide road winds itself downward as the page scrolls — you travel down it,
+ * not sideways past it. Each tier opens with a plain chapter marker straddling
+ * the road; each note is a station set to one side, alternating left and
+ * right, rising into place as it's reached. The ENTIRE field behind everything
+ * washes from one tier's colour world to the next as you descend. Themeable,
+ * fully localisable, framework-CSS-free, dependent only on `gsap` + `motion`.
+ *
+ * Performance: the scroll scrub only ever touches compositor-cheap work — the
+ * road's stroke-dashoffset (draw-in, one paint), the bead's transform, and the
+ * OPACITY of a small stack of pre-coloured full-bleed field layers. No
+ * per-frame getPointAtLength, no background-colour or gradient-colour
+ * animation, no filters on animated nodes — so it stays smooth on every device.
  */
 export function Scentuary({
   notes,
@@ -126,17 +141,21 @@ export function Scentuary({
   const isDesktop = useIsDesktop();
   const root = useRef<HTMLDivElement>(null);
   const track = useRef<HTMLDivElement>(null);
+  const roadBox = useRef<HTMLDivElement>(null);
   const closing = useRef<HTMLDivElement>(null);
+  const geom = useRef<{
+    pathLength: number;
+    samples: { x: number; y: number }[];
+  }>({ pathLength: 0, samples: [{ x: 0, y: 0 }] });
   const art = renderNoteArt ?? DefaultNoteArt;
   const gradientId = useId();
-  const noteArtSize = isDesktop ? 136 : 100;
+  const noteArtSize = isDesktop ? 168 : 120;
 
   // Build the descent as an ordered list of stops (tier markers + note
   // stations, alternating sides), and in the same pass the tone "bands" the
-  // field eases across. A band's weight is roughly its stop's share of the
-  // scroll distance — a cheap proxy for real layout height that needs no
-  // DOM measurement, since row height already tracks content size via
-  // ordinary flow.
+  // field washes across. A band's weight is roughly its share of scroll
+  // distance — a cheap proxy for real height that needs no DOM measurement,
+  // since flow already sizes each row to its content.
   const stops: Stop[] = [];
   const bands: Band[] = [];
   let toneIdx = 0;
@@ -172,91 +191,145 @@ export function Scentuary({
   // colour through the closing epilogue, mirroring how it opens.
   bands.push({ tint: theme.background, glow: theme.accent, weight: 1.4 });
 
+  const noteCount = notes.top.length + notes.heart.length + notes.base.length;
   const notesSignature = `${notes.top.length}-${notes.heart.length}-${notes.base.length}`;
 
-  // The road's geometry — a handful of gentle bends regardless of how many
-  // notes there are (one per note read as a jagged zigzag; a few wide bends
-  // read as a road). A tall, narrow viewBox with `preserveAspectRatio="none"`
-  // stretches to the track's real height without visible distortion, since
-  // the amplitude is a small fraction of the road column's own width.
-  const ROAD_VB_H = 1000;
-  const BEND_COUNT = 6;
-  const roadPathD = serpentine(
-    Array.from({ length: BEND_COUNT + 1 }, (_, i) => ({
-      x: i % 2 === 0 ? 46 : 54,
-      y: (i / BEND_COUNT) * ROAD_VB_H,
+  // A handful of wide bends (never one-per-note, which reads as a zigzag),
+  // leaning first toward the opening note's side so road and stations agree.
+  const bendCount = Math.min(8, Math.max(4, Math.round(noteCount * 0.7)));
+  const placeholderD = serpentine(
+    Array.from({ length: bendCount + 1 }, (_, i) => ({
+      x: i % 2 === 0 ? BEND_X_LEFT : BEND_X_RIGHT,
+      y: (i / bendCount) * PLACEHOLDER_H,
     })),
   );
 
-  // ── Scrubbed to scroll: draw the road, ride a bead along it, and ease
-  //    the field's tint/glow continuously across the tier bands. Nothing
-  //    pins — the page scrolls exactly as far as its content is tall, so
-  //    there's no pin-spacer to desync and nothing to jump mid-scroll.
-  useEffect(() => {
+  // ── Scrubbed to scroll: draw the road, glide the bead, cross-fade the
+  //    field's colour bands. Everything here is compositor-cheap. Nothing pins.
+  useIsoLayoutEffect(() => {
     const el = root.current;
     const trackEl = track.current;
-    if (reduce || !el || !trackEl) return;
-    const ctx = gsap.context(() => {
-      const fill = el.querySelector<SVGPathElement>("[data-spine-fill]");
-      const bead = el.querySelector<SVGCircleElement>("[data-bead]");
-      const tint = el.querySelector<HTMLElement>("[data-field-tint]");
-      const glow = el.querySelector<HTMLElement>("[data-field-glow]");
-      if (!fill) return;
+    const boxEl = roadBox.current;
+    if (!el || !trackEl || !boxEl) return;
 
-      const pathLength = fill.getTotalLength();
-      gsap.set(fill, { drawSVG: "0%" });
-      if (bead) {
-        const start = fill.getPointAtLength(0);
-        gsap.set(bead, { attr: { cx: start.x, cy: start.y } });
-      }
+    const svg = el.querySelector<SVGSVGElement>("[data-road-svg]");
+    const trackPath = el.querySelector<SVGPathElement>("[data-road-track]");
+    const halo = el.querySelector<SVGPathElement>("[data-spine-halo]");
+    const core = el.querySelector<SVGPathElement>("[data-spine-core]");
+    const bead = el.querySelector<HTMLElement>("[data-bead]");
+    const fieldLayers = gsap.utils.toArray<HTMLElement>("[data-field-band]");
+    if (!svg || !trackPath || !halo || !core) return;
 
-      const totalWeight = bands.reduce((sum, b) => sum + b.weight, 0);
-      let acc = 0;
-      const centers = bands.map((b) => {
-        const span = { start: acc, end: acc + b.weight };
-        acc = span.end;
-        return (span.start + span.end) / 2 / totalWeight;
-      });
-      const toneAt = (p: number): { tint: string; glow: string } => {
-        if (p <= centers[0]) return bands[0];
-        for (let i = 0; i < centers.length - 1; i++) {
-          if (p >= centers[i] && p <= centers[i + 1]) {
-            const t = (p - centers[i]) / (centers[i + 1] - centers[i]);
-            return {
-              tint: lerpColor(bands[i].tint, bands[i + 1].tint, t),
-              glow: lerpColor(bands[i].glow, bands[i + 1].glow, t),
-            };
-          }
+    // Field band cross-fade windows: each band owns a centre along the scroll;
+    // opacity ramps 1→0 to its neighbours, so exactly two ever blend.
+    const totalWeight = bands.reduce((sum, b) => sum + b.weight, 0);
+    let acc = 0;
+    const centers = bands.map((b) => {
+      const mid = (2 * acc + b.weight) / 2 / totalWeight;
+      acc += b.weight;
+      return mid;
+    });
+    const bandOpacity = (i: number, p: number): number => {
+      if (p <= centers[0]) return i === 0 ? 1 : 0;
+      if (p >= centers[centers.length - 1])
+        return i === centers.length - 1 ? 1 : 0;
+      for (let j = 0; j < centers.length - 1; j++) {
+        if (p >= centers[j] && p <= centers[j + 1]) {
+          const t = (p - centers[j]) / (centers[j + 1] - centers[j] || 1);
+          if (i === j) return 1 - t;
+          if (i === j + 1) return t;
+          return 0;
         }
-        return bands[bands.length - 1];
-      };
+      }
+      return 0;
+    };
 
+    // Regenerate the road in REAL pixels for the box's current size, so the
+    // viewBox is 1:1 with the box — uniform scale, no stroke distortion, and
+    // getTotalLength returns true pixel length so the dash draw is exact.
+    const build = () => {
+      const w = boxEl.clientWidth;
+      const h = boxEl.clientHeight;
+      if (w === 0 || h === 0) return;
+      const pts = Array.from({ length: bendCount + 1 }, (_, i) => ({
+        x: ((i % 2 === 0 ? BEND_X_LEFT : BEND_X_RIGHT) / 100) * w,
+        y: (i / bendCount) * h,
+      }));
+      const d = serpentine(pts);
+      svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+      trackPath.setAttribute("d", d);
+      halo.setAttribute("d", d);
+      core.setAttribute("d", d);
+      const pathLength = core.getTotalLength();
+      halo.style.strokeDasharray = String(pathLength);
+      core.style.strokeDasharray = String(pathLength);
+      const samples = Array.from({ length: BEAD_SAMPLES + 1 }, (_, i) => {
+        const pt = core.getPointAtLength((i / BEAD_SAMPLES) * pathLength);
+        return { x: pt.x, y: pt.y };
+      });
+      geom.current = { pathLength, samples };
+    };
+
+    const draw = (p: number) => {
+      const { pathLength, samples } = geom.current;
+      const off = pathLength * (1 - p);
+      core.style.strokeDashoffset = String(off);
+      halo.style.strokeDashoffset = String(off);
+      if (bead) {
+        const s =
+          samples[Math.min(BEAD_SAMPLES, Math.round(p * BEAD_SAMPLES))] ??
+          samples[0];
+        gsap.set(bead, { x: s.x, y: s.y });
+      }
+      fieldLayers.forEach((layer, i) =>
+        gsap.set(layer, { opacity: bandOpacity(i, p) }),
+      );
+    };
+
+    build();
+
+    // Reduced motion: draw the full calm road once, no scrub, first tone only.
+    if (reduce) {
+      core.style.strokeDashoffset = "0";
+      halo.style.strokeDashoffset = "0";
+      const s0 = geom.current.samples[0];
+      if (bead) gsap.set(bead, { xPercent: -50, yPercent: -50, x: s0.x, y: s0.y });
+      fieldLayers.forEach((layer, i) => gsap.set(layer, { opacity: i === 0 ? 1 : 0 }));
+      const onResize = () => build();
+      window.addEventListener("resize", onResize);
+      return () => window.removeEventListener("resize", onResize);
+    }
+
+    if (bead) gsap.set(bead, { xPercent: -50, yPercent: -50 });
+
+    const ctx = gsap.context(() => {
+      draw(0);
       ScrollTrigger.create({
         trigger: trackEl,
-        start: "top 75%",
+        start: "top 80%",
         endTrigger: closing.current ?? trackEl,
-        end: closing.current ? "bottom 60%" : "bottom 25%",
-        scrub: 0.6,
+        end: closing.current ? "bottom 55%" : "bottom 20%",
+        scrub: 0.5,
         invalidateOnRefresh: true,
-        onUpdate: (st) => {
-          gsap.set(fill, { drawSVG: st.progress * 100 + "%" });
-          if (bead) {
-            const pt = fill.getPointAtLength(st.progress * pathLength);
-            gsap.set(bead, { attr: { cx: pt.x, cy: pt.y } });
-          }
-          const tone = toneAt(st.progress);
-          if (tint) gsap.set(tint, { backgroundColor: tone.tint });
-          if (glow) gsap.set(glow, { color: tone.glow });
+        onRefresh: (self) => {
+          build();
+          draw(self.progress);
         },
+        onUpdate: (self) => draw(self.progress),
       });
     }, root);
+
+    // One deferred refresh once web fonts settle — font swap can change the
+    // stops' heights (and thus the road's), and this re-measures without the
+    // late-"load" jump we disabled above.
+    const fontSet = (document as Document & { fonts?: FontFaceSet }).fonts;
+    fontSet?.ready.then(() => ScrollTrigger.refresh());
+
     return () => ctx.revert();
-    // Depend on primitive values that actually drive this effect's setup,
-    // not on `bands`/`notes`/`theme` object identity — those are rebuilt
-    // fresh every render (locale text changes included) but only a slug
-    // swap (full remount) or a reduced-motion toggle should tear this down.
+    // Depend on primitives that actually drive setup — not on bands/notes/theme
+    // object identity, which are rebuilt every render (locale text included).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reduce, theme.background, theme.accent, notesSignature]);
+  }, [reduce, bendCount, notesSignature, theme.background, theme.accent]);
 
   return (
     <section
@@ -265,26 +338,51 @@ export function Scentuary({
       style={{
         position: "relative",
         width: "100%",
+        // Clip (not scroll) the full-bleed field so it can span the viewport
+        // without ever introducing a horizontal scrollbar on any device.
+        overflowX: "clip",
         color: theme.text,
         fontFamily: theme.fontBody,
         ...style,
       }}
     >
-      {/* Recolouring field — behind everything, eases tier to tier */}
-      <div aria-hidden style={{ position: "absolute", inset: 0, zIndex: 0 }}>
+      {/* The recolouring FIELD — a full-viewport stack, one layer per tier
+          band, cross-faded by opacity as the journey descends. Layer 0 is the
+          deep base; each tier layer washes the whole screen in its colour. */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          top: 0,
+          bottom: 0,
+          left: "50%",
+          width: "100vw",
+          transform: "translateX(-50%)",
+          zIndex: 0,
+          backgroundColor: theme.background,
+          pointerEvents: "none",
+        }}
+      >
+        {bands.map((band, i) => (
+          <div
+            key={i}
+            data-field-band
+            style={{
+              position: "absolute",
+              inset: 0,
+              opacity: i === 0 ? 1 : 0,
+              willChange: "opacity",
+              backgroundColor: band.tint,
+              backgroundImage: `radial-gradient(130% 78% at 50% 22%, ${band.glow}88, ${band.glow}33 42%, transparent 76%)`,
+            }}
+          />
+        ))}
+        {/* A soft top/bottom vignette keeps text legible over any wash. */}
         <div
-          data-field-tint
-          style={{ position: "absolute", inset: 0, backgroundColor: theme.background }}
-        />
-        <div
-          data-field-glow
           style={{
             position: "absolute",
             inset: 0,
-            background: "radial-gradient(circle at 50% 30%, currentColor 0%, transparent 68%)",
-            color: theme.accent,
-            opacity: 0.35,
-            mixBlendMode: "screen",
+            background: `linear-gradient(180deg, ${theme.background}cc, transparent 22%, transparent 78%, ${theme.background}cc)`,
           }}
         />
       </div>
@@ -296,14 +394,15 @@ export function Scentuary({
           ref={track}
           style={{
             position: "relative",
-            maxWidth: 1160,
+            maxWidth: 1180,
             margin: "0 auto",
-            paddingInline: "clamp(1.25rem, 5vw, 3rem)",
+            paddingInline: "clamp(1rem, 5vw, 3rem)",
           }}
         >
-          {/* The road — spans the full rendered height of the stops below,
-              a bead riding it, drawing in as the section scrolls by. */}
+          {/* The winding ROAD — a wide column behind the stops, stretched to
+              their full rendered height, drawing in as the section scrolls. */}
           <div
+            ref={roadBox}
             aria-hidden
             style={{
               position: "absolute",
@@ -311,13 +410,14 @@ export function Scentuary({
               transform: "translateX(-50%)",
               top: 0,
               bottom: 0,
-              width: ROAD_WIDTH,
+              width: "min(78vw, 660px)",
               zIndex: 0,
               pointerEvents: "none",
             }}
           >
             <svg
-              viewBox={`0 0 100 ${ROAD_VB_H}`}
+              data-road-svg
+              viewBox={`0 0 100 ${PLACEHOLDER_H}`}
               preserveAspectRatio="none"
               style={{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible" }}
             >
@@ -327,45 +427,54 @@ export function Scentuary({
                   <stop offset="100%" stopColor={theme.accent} />
                 </linearGradient>
               </defs>
+              {/* Dim full road underneath — the path yet to be travelled. */}
               <path
-                d={roadPathD}
+                data-road-track
+                d={placeholderD}
                 stroke={theme.accent}
-                strokeOpacity={0.15}
-                strokeWidth={10}
+                strokeOpacity={0.16}
+                strokeWidth={2}
                 strokeLinecap="round"
                 fill="none"
               />
+              {/* Wide, soft halo that draws in with the core — the glow, done
+                  as a translucent wide stroke, never a per-frame filter. */}
               <path
-                data-spine-fill
-                d={roadPathD}
-                stroke={`url(#${gradientId})`}
-                strokeWidth={10}
+                data-spine-halo
+                d={placeholderD}
+                stroke={theme.accentBright}
+                strokeOpacity={0.22}
+                strokeWidth={11}
                 strokeLinecap="round"
                 fill="none"
-                style={{ filter: `drop-shadow(0 0 6px ${theme.accent})` }}
               />
-              {!reduce ? (
-                <circle
-                  data-bead
-                  // Real starting coordinates (the road's own first point),
-                  // not left unset. GSAP's `attr:{cx,cy}` sets below are the
-                  // only thing that ever moves this, but `usePrefersReducedMotion`
-                  // deliberately renders as if motion were enabled for one
-                  // tick before syncing to the real OS preference (see that
-                  // hook's comment) — if `reduce` flips true right after, the
-                  // GSAP context this circle belongs to reverts on cleanup,
-                  // restoring whatever cx/cy were before it ran. Leaving them
-                  // unset meant reverting to "", which browsers reject as an
-                  // invalid SVG length and log a console error for. A real
-                  // starting value keeps that revert valid.
-                  cx={46}
-                  cy={0}
-                  r={9}
-                  fill={theme.accentBright}
-                  style={{ filter: `drop-shadow(0 0 8px ${theme.accent})` }}
-                />
-              ) : null}
+              {/* Bright core that draws in with scroll. */}
+              <path
+                data-spine-core
+                d={placeholderD}
+                stroke={`url(#${gradientId})`}
+                strokeWidth={3}
+                strokeLinecap="round"
+                fill="none"
+              />
             </svg>
+            {/* Bead — an HTML dot (kept perfectly round, unlike an SVG circle
+                in a stretched viewBox) gliding down the road via transform. */}
+            {!reduce ? (
+              <div
+                data-bead
+                style={{
+                  position: "absolute",
+                  top: 0,
+                  left: 0,
+                  height: 14,
+                  width: 14,
+                  borderRadius: "9999px",
+                  background: theme.accentBright,
+                  boxShadow: `0 0 14px 3px ${theme.accent}`,
+                }}
+              />
+            ) : null}
           </div>
 
           <div
@@ -373,27 +482,25 @@ export function Scentuary({
               position: "relative",
               zIndex: 1,
               display: "grid",
-              gridTemplateColumns: `1fr ${ROAD_WIDTH} 1fr`,
-              columnGap: "clamp(1rem, 3vw, 2.5rem)",
+              gridTemplateColumns: "1fr 1fr",
+              columnGap: "clamp(0.5rem, 3vw, 2rem)",
             }}
           >
             {stops.map((stop, i) =>
               stop.kind === "tier" ? (
                 <div
                   key={i}
-                  data-tier-row
                   style={{
                     gridColumn: "1 / -1",
-                    // Grid auto-placement packs items sparsely by default: an
-                    // item that only constrains its column (not its row) is
-                    // dropped into the EARLIEST row with that column free —
-                    // so two alternating-side notes would land in the same
-                    // row instead of stacking. Pin every stop to its own row
-                    // by index so the descent always reads top to bottom.
+                    // Grid auto-placement packs items sparsely: an item that
+                    // only constrains its column drops into the earliest free
+                    // row, so alternating-side notes could collide. Pin every
+                    // stop to its own row by index — descent reads top to
+                    // bottom, always.
                     gridRow: i + 1,
                     display: "flex",
                     justifyContent: "center",
-                    paddingBlock: "clamp(2.5rem, 6vh, 4rem)",
+                    paddingBlock: "clamp(2.5rem, 7vh, 4.5rem)",
                   }}
                 >
                   <TierStop tier={stop.tier} theme={theme} reduce={reduce} />
@@ -402,10 +509,10 @@ export function Scentuary({
                 <div
                   key={i}
                   style={{
-                    gridColumn: stop.side === "left" ? 1 : 3,
+                    gridColumn: stop.side === "left" ? 1 : 2,
                     gridRow: i + 1,
                     justifySelf: stop.side === "left" ? "end" : "start",
-                    paddingBlock: "clamp(3rem, 9vh, 6rem)",
+                    paddingBlock: "clamp(2.75rem, 9vh, 6rem)",
                   }}
                 >
                   <NoteStop
@@ -528,7 +635,7 @@ function TierStop({ tier, theme, reduce }: { tier: ScentTier; theme: ScentuaryTh
         {tier.label}
       </p>
       {tier.subtitle ? (
-        <p style={{ marginTop: "0.65rem", fontStyle: "italic", fontSize: "clamp(1.4rem, 3vw, 1.9rem)", color: theme.accentSoft }}>
+        <p style={{ marginTop: "0.65rem", fontStyle: "italic", fontSize: "clamp(1.5rem, 3.4vw, 2.1rem)", color: theme.accentBright }}>
           {tier.subtitle}
         </p>
       ) : null}
@@ -538,9 +645,10 @@ function TierStop({ tier, theme, reduce }: { tier: ScentTier; theme: ScentuaryTh
             marginTop: "0.9rem",
             maxWidth: "22rem",
             fontStyle: "italic",
-            fontSize: "0.85rem",
+            fontSize: "0.9rem",
             lineHeight: 1.65,
-            color: theme.textSoft,
+            color: theme.text,
+            opacity: 0.72,
             textWrap: "balance",
           }}
         >
@@ -549,7 +657,7 @@ function TierStop({ tier, theme, reduce }: { tier: ScentTier; theme: ScentuaryTh
       ) : null}
       <span
         aria-hidden
-        style={{ marginTop: "1.15rem", height: 1, width: 40, background: `linear-gradient(to right, transparent, ${theme.accent}, transparent)` }}
+        style={{ marginTop: "1.15rem", height: 1, width: 46, background: `linear-gradient(to right, transparent, ${theme.accentBright}, transparent)` }}
       />
     </motion.div>
   );
@@ -580,7 +688,7 @@ function NoteStop({
     <motion.div
       initial={reduce ? false : { opacity: 0, x: side === "left" ? -26 : 26, y: 18 }}
       whileInView={reduce ? undefined : { opacity: 1, x: 0, y: 0 }}
-      viewport={{ once: true, margin: "-15% 0px" }}
+      viewport={{ once: true, margin: "-12% 0px" }}
       transition={{ duration: 0.8, ease: EASE_OUT_EXPO }}
       style={{
         position: "relative",
@@ -589,34 +697,36 @@ function NoteStop({
         alignItems: side === "left" ? "flex-end" : "flex-start",
         textAlign: side === "left" ? "right" : "left",
         gap: "1.35rem",
-        maxWidth: 360,
+        maxWidth: 400,
         fontFamily: theme.fontDisplay,
       }}
     >
       <div style={{ position: "relative", display: "grid", placeItems: "center" }}>
+        {/* A soft coloured bloom lifts the glyph off the now-colourful field
+            so the mark reads clearly against any wash. */}
         <div
           aria-hidden
           style={{
             position: "absolute",
-            height: "min(58vw, 300px)",
-            width: "min(58vw, 300px)",
+            height: "min(64vw, 340px)",
+            width: "min(64vw, 340px)",
             borderRadius: "9999px",
-            background: `radial-gradient(circle, ${tone.glow} 0%, transparent 68%)`,
-            filter: "blur(48px)",
-            opacity: 0.55,
-            mixBlendMode: "screen",
+            background: `radial-gradient(circle, ${tone.glow} 0%, ${tone.glow}55 34%, transparent 70%)`,
+            filter: "blur(30px)",
+            opacity: 0.7,
           }}
         />
-        <div style={{ position: "relative" }}>{art(note, { color: tone.art, size, reduce })}</div>
+        <div style={{ position: "relative", filter: `drop-shadow(0 0 10px ${tone.glow}aa)` }}>
+          {art(note, { color: tone.art, size, reduce })}
+        </div>
       </div>
       <div>
         <p
           style={{
-            fontSize: "0.58rem",
+            fontSize: "0.6rem",
             textTransform: "uppercase",
             letterSpacing: "0.5em",
             color: tone.art,
-            opacity: 0.75,
           }}
         >
           {familyWord}
@@ -625,7 +735,7 @@ function NoteStop({
           style={{
             fontStyle: "italic",
             marginTop: "0.65rem",
-            fontSize: "clamp(1.6rem, 3.4vw, 2.35rem)",
+            fontSize: "clamp(1.7rem, 3.6vw, 2.5rem)",
             lineHeight: 1.1,
             color: theme.text,
             textWrap: "balance",
@@ -634,7 +744,7 @@ function NoteStop({
           {note.name}
         </p>
         {note.subtitle ? (
-          <div style={{ marginTop: "0.55rem", fontSize: "clamp(1.05rem, 2.2vw, 1.35rem)", color: tone.art }}>
+          <div style={{ marginTop: "0.55rem", fontSize: "clamp(1.1rem, 2.3vw, 1.4rem)", color: tone.art }}>
             {note.subtitle}
           </div>
         ) : null}
@@ -669,7 +779,8 @@ function ClosingBlock({ theme, labels, reduce }: { theme: ScentuaryTheme; labels
           fontStyle: "italic",
           fontSize: "clamp(1.5rem, 3.4vw, 2.125rem)",
           lineHeight: 1.55,
-          color: theme.textSoft,
+          color: theme.text,
+          opacity: 0.82,
           textWrap: "balance",
         }}
       >
