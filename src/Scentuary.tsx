@@ -703,7 +703,10 @@ function NoteStop({
     >
       <div style={{ position: "relative", display: "grid", placeItems: "center" }}>
         {/* A soft coloured bloom lifts the glyph off the now-colourful field
-            so the mark reads clearly against any wash. */}
+            so the mark reads clearly against any wash. The diffusion is baked
+            into a multi-stop radial gradient rather than a CSS `blur()` filter,
+            so it never forces a per-frame re-rasterisation as the journey
+            scrolls — the glow reads identically at zero compositing cost. */}
         <div
           aria-hidden
           style={{
@@ -711,12 +714,11 @@ function NoteStop({
             height: "min(64vw, 340px)",
             width: "min(64vw, 340px)",
             borderRadius: "9999px",
-            background: `radial-gradient(circle, ${tone.glow} 0%, ${tone.glow}55 34%, transparent 70%)`,
-            filter: "blur(30px)",
-            opacity: 0.7,
+            background: `radial-gradient(circle, ${tone.glow} 0%, ${tone.glow}66 26%, ${tone.glow}22 52%, transparent 76%)`,
+            opacity: 0.66,
           }}
         />
-        <div style={{ position: "relative", filter: `drop-shadow(0 0 10px ${tone.glow}aa)` }}>
+        <div style={{ position: "relative" }}>
           {art(note, { color: tone.art, size, reduce })}
         </div>
       </div>
