@@ -67,7 +67,7 @@ const TIER_ORDER = ["top", "heart", "base"] as const;
 /** One stop along the descending road — a chapter marker straddling the path,
  *  or a note station set to one side of it. */
 type Stop =
-  | { kind: "tier"; key: (typeof TIER_ORDER)[number]; tier: ScentTier }
+  | { kind: "tier"; key: (typeof TIER_ORDER)[number]; tier: ScentTier; side: Side }
   | {
       kind: "note";
       note: ScentNote;
@@ -168,12 +168,17 @@ export function Scentuary({
   const bands: Band[] = [];
   let toneIdx = 0;
   let side: Side = "left";
+  // Tier dividers alternate on their own rhythm (Top left, Heart right, …), so
+  // a chapter header sits to one side of the road just like the notes — never
+  // straddling the path.
+  let tierSide: Side = "left";
   for (const key of TIER_ORDER) {
     const tierNotes = notes[key] ?? [];
     if (tierNotes.length === 0) continue;
     const previewBase = theme.tones[toneIdx % theme.tones.length];
     const previewTone = { ...previewBase, ...tierNotes[0]?.tone };
-    stops.push({ kind: "tier", key, tier: labels.tiers[key] });
+    stops.push({ kind: "tier", key, tier: labels.tiers[key], side: tierSide });
+    tierSide = tierSide === "left" ? "right" : "left";
     bands.push({
       tint: previewTone.tint,
       glow: previewTone.glow,
@@ -547,19 +552,15 @@ export function Scentuary({
                 <div
                   key={i}
                   style={{
-                    gridColumn: "1 / -1",
-                    // Grid auto-placement packs items sparsely: an item that
-                    // only constrains its column drops into the earliest free
-                    // row, so alternating-side notes could collide. Pin every
-                    // stop to its own row by index — descent reads top to
-                    // bottom, always.
+                    gridColumn: stop.side === "left" ? 1 : 3,
+                    // Pin every stop to its own row by index so the descent
+                    // reads top to bottom and the two sides never collide.
                     gridRow: i + 1,
-                    display: "flex",
-                    justifyContent: "center",
+                    justifySelf: stop.side === "left" ? "end" : "start",
                     paddingBlock: "clamp(3.5rem, 10vh, 6.5rem)",
                   }}
                 >
-                  <TierStop tier={stop.tier} theme={theme} reduce={reduce} />
+                  <TierStop tier={stop.tier} side={stop.side} theme={theme} reduce={reduce} />
                 </div>
               ) : (
                 <div
@@ -661,12 +662,27 @@ function IntroBlock({ theme, labels, reduce }: { theme: ScentuaryTheme; labels: 
   );
 }
 
-/** A chapter marker straddling the road — plain type, no numeral, no ring. */
-function TierStop({ tier, theme, reduce }: { tier: ScentTier; theme: ScentuaryTheme; reduce: boolean }) {
+/** A chapter marker set to one side of the road — plain type, no numeral, no
+ *  ring, with a hairline that reaches from the label toward the road so the
+ *  chapter reads as belonging to the descent rather than floating beside it. */
+function TierStop({
+  tier,
+  side,
+  theme,
+  reduce,
+}: {
+  tier: ScentTier;
+  side: Side;
+  theme: ScentuaryTheme;
+  reduce: boolean;
+}) {
+  // A left-side chapter has the road to its right, so it aligns to its right
+  // edge and its connector line reaches rightward; the right side mirrors it.
+  const toRoad = side === "left" ? "flex-end" : "flex-start";
   return (
     <motion.div
-      initial={reduce ? false : { opacity: 0, y: 16 }}
-      whileInView={reduce ? undefined : { opacity: 1, y: 0 }}
+      initial={reduce ? false : { opacity: 0, x: side === "left" ? -22 : 22 }}
+      whileInView={reduce ? undefined : { opacity: 1, x: 0 }}
       viewport={{ once: false, margin: "-20% 0px" }}
       transition={{ duration: 0.7, ease: EASE_OUT_EXPO }}
       style={{
@@ -674,34 +690,47 @@ function TierStop({ tier, theme, reduce }: { tier: ScentTier; theme: ScentuaryTh
         zIndex: 1,
         display: "flex",
         flexDirection: "column",
-        alignItems: "center",
-        textAlign: "center",
-        maxWidth: 360,
+        alignItems: toRoad,
+        textAlign: side === "left" ? "right" : "left",
+        maxWidth: 420,
         fontFamily: theme.fontDisplay,
       }}
     >
+      {/* Connector hairline reaching from the label toward the road. */}
+      <span
+        aria-hidden
+        style={{
+          height: 1,
+          width: "clamp(2.5rem, 9vw, 6.5rem)",
+          marginBottom: "1.5rem",
+          background:
+            side === "left"
+              ? `linear-gradient(to right, transparent, ${theme.accentBright})`
+              : `linear-gradient(to left, transparent, ${theme.accentBright})`,
+        }}
+      />
       <p
         style={{
-          fontSize: "0.68rem",
+          fontSize: "0.64rem",
           textTransform: "uppercase",
-          letterSpacing: "0.65em",
+          letterSpacing: "0.62em",
           color: theme.accentBright,
         }}
       >
         {tier.label}
       </p>
       {tier.subtitle ? (
-        <p style={{ marginTop: "0.65rem", fontStyle: "italic", fontSize: "clamp(1.5rem, 3.4vw, 2.1rem)", color: theme.accentBright }}>
+        <p style={{ marginTop: "0.55rem", fontStyle: "italic", fontSize: "clamp(1.8rem, 4vw, 2.6rem)", lineHeight: 1.05, color: theme.accentBright }}>
           {tier.subtitle}
         </p>
       ) : null}
       {tier.caption ? (
         <div
           style={{
-            marginTop: "0.9rem",
-            maxWidth: "22rem",
+            marginTop: "0.95rem",
+            maxWidth: "20rem",
             fontStyle: "italic",
-            fontSize: "0.9rem",
+            fontSize: "0.92rem",
             lineHeight: 1.65,
             color: theme.text,
             opacity: 0.72,
@@ -711,10 +740,6 @@ function TierStop({ tier, theme, reduce }: { tier: ScentTier; theme: ScentuaryTh
           {tier.caption}
         </div>
       ) : null}
-      <span
-        aria-hidden
-        style={{ marginTop: "1.15rem", height: 1, width: 46, background: `linear-gradient(to right, transparent, ${theme.accentBright}, transparent)` }}
-      />
     </motion.div>
   );
 }
