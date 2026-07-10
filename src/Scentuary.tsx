@@ -284,10 +284,19 @@ export function Scentuary({
       const { pathLength, samples } = geom.current;
       core.style.strokeDashoffset = String(pathLength * (1 - p));
       if (bead) {
-        const s =
-          samples[Math.min(BEAD_SAMPLES, Math.round(p * BEAD_SAMPLES))] ??
-          samples[0];
-        gsap.set(bead, { x: s.x, y: s.y });
+        // Slide the bead CONTINUOUSLY along the road by lerping between the two
+        // nearest precomputed samples, rather than snapping to the closest one
+        // (Math.round) — that quantised the position to 240 buckets and made
+        // the dot visibly step forward on a slow scroll. Linear interpolation
+        // between dense samples reads as a smooth glide, and still costs no
+        // per-frame path geometry query.
+        const f = Math.max(0, Math.min(BEAD_SAMPLES, p * BEAD_SAMPLES));
+        const i0 = Math.floor(f);
+        const i1 = Math.min(BEAD_SAMPLES, i0 + 1);
+        const t = f - i0;
+        const a = samples[i0] ?? samples[0];
+        const b = samples[i1] ?? a;
+        gsap.set(bead, { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
       }
       fieldLayers.forEach((layer, i) =>
         gsap.set(layer, { opacity: bandOpacity(i, p) }),
