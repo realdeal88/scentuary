@@ -51,6 +51,9 @@ const BEND_X_LEFT = 28;
 const BEND_X_RIGHT = 72;
 const PLACEHOLDER_H = 1000;
 const BEAD_SAMPLES = 240;
+/** The central lane the road owns. Notes sit in the flexible columns on either
+ *  side of it, so a glyph or title can never land on top of the drawn path. */
+const ROAD_LANE = "clamp(150px, 20vw, 240px)";
 
 type Labels = ReturnType<typeof mergeLabels>;
 type ArtFn = (
@@ -121,11 +124,16 @@ function usePrefersReducedMotion(): boolean {
  * washes from one tier's colour world to the next as you descend. Themeable,
  * fully localisable, framework-CSS-free, dependent only on `gsap` + `motion`.
  *
- * Performance: the scroll scrub only ever touches compositor-cheap work — the
- * road's stroke-dashoffset (draw-in, one paint), the bead's transform, and the
- * OPACITY of a small stack of pre-coloured full-bleed field layers. No
- * per-frame getPointAtLength, no background-colour or gradient-colour
- * animation, no filters on animated nodes — so it stays smooth on every device.
+ * Performance: the scroll scrub keeps per-frame paint to the minimum that
+ * still needs it — only the CORE's stroke-dashoffset (a single thin 3px
+ * line). The wide halo glow is drawn once, statically, and never re-touched:
+ * dash-offsetting an 11px stroke every scroll frame forces the browser to
+ * repaint that whole wide raster, not composite it, and doing it twice (halo
+ * + core) every frame was the dominant cause of the road's "stepping". The
+ * bead's transform and the OPACITY of a small stack of pre-coloured
+ * full-bleed field layers are the only other per-frame writes, both
+ * compositor-only. No per-frame getPointAtLength, no background-colour or
+ * gradient-colour animation, no filters on animated nodes.
  */
 export function Scentuary({
   notes,
@@ -261,7 +269,9 @@ export function Scentuary({
       halo.setAttribute("d", d);
       core.setAttribute("d", d);
       const pathLength = core.getTotalLength();
-      halo.style.strokeDasharray = String(pathLength);
+      // The halo gets no dasharray — it's a plain solid stroke the browser
+      // paints once and never re-rasterises. Only the thin core below draws
+      // in via dashoffset (see draw()).
       core.style.strokeDasharray = String(pathLength);
       const samples = Array.from({ length: BEAD_SAMPLES + 1 }, (_, i) => {
         const pt = core.getPointAtLength((i / BEAD_SAMPLES) * pathLength);
@@ -272,9 +282,7 @@ export function Scentuary({
 
     const draw = (p: number) => {
       const { pathLength, samples } = geom.current;
-      const off = pathLength * (1 - p);
-      core.style.strokeDashoffset = String(off);
-      halo.style.strokeDashoffset = String(off);
+      core.style.strokeDashoffset = String(pathLength * (1 - p));
       if (bead) {
         const s =
           samples[Math.min(BEAD_SAMPLES, Math.round(p * BEAD_SAMPLES))] ??
@@ -291,7 +299,6 @@ export function Scentuary({
     // Reduced motion: draw the full calm road once, no scrub, first tone only.
     if (reduce) {
       core.style.strokeDashoffset = "0";
-      halo.style.strokeDashoffset = "0";
       const s0 = geom.current.samples[0];
       if (bead) gsap.set(bead, { xPercent: -50, yPercent: -50, x: s0.x, y: s0.y });
       fieldLayers.forEach((layer, i) => gsap.set(layer, { opacity: i === 0 ? 1 : 0 }));
@@ -319,13 +326,35 @@ export function Scentuary({
       });
     }, root);
 
+    // The road column keeps growing after first paint — note images decode,
+    // web fonts swap, and each station's entrance animation settles — which
+    // lengthens the box. With the SVG sized to fill the box under
+    // preserveAspectRatio="none", a stale viewBox height STRETCHES the drawn
+    // path vertically while the absolutely-positioned bead stays put, floating
+    // the dot OFF the road. A ResizeObserver re-measures on any real size
+    // change so the path and the bead stay locked together. Coalesced to one
+    // refresh per frame so a burst of layout writes costs a single rebuild.
+    let raf = 0;
+    const ro = new ResizeObserver(() => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        ScrollTrigger.refresh();
+      });
+    });
+    ro.observe(boxEl);
+
     // One deferred refresh once web fonts settle — font swap can change the
     // stops' heights (and thus the road's), and this re-measures without the
     // late-"load" jump we disabled above.
     const fontSet = (document as Document & { fonts?: FontFaceSet }).fonts;
     fontSet?.ready.then(() => ScrollTrigger.refresh());
 
-    return () => ctx.revert();
+    return () => {
+      ro.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+      ctx.revert();
+    };
     // Depend on primitives that actually drive setup — not on bands/notes/theme
     // object identity, which are rebuilt every render (locale text included).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -373,9 +402,22 @@ export function Scentuary({
               opacity: i === 0 ? 1 : 0,
               willChange: "opacity",
               backgroundColor: band.tint,
-              backgroundImage: `radial-gradient(130% 78% at 50% 22%, ${band.glow}88, ${band.glow}33 42%, transparent 76%)`,
             }}
-          />
+          >
+            {/* The glow, screen-blended over the flat tint so it adds light
+                and dissolves rather than compositing a visible disc — same
+                recipe as the note bloom below. Transparent by 66% of its
+                radius keeps the wash seamless, with no ring at its own edge. */}
+            <div
+              aria-hidden
+              style={{
+                position: "absolute",
+                inset: 0,
+                backgroundImage: `radial-gradient(130% 78% at 50% 22%, ${band.glow} 0%, ${band.glow}80 20%, ${band.glow}2e 42%, transparent 66%)`,
+                mixBlendMode: "screen",
+              }}
+            />
+          </div>
         ))}
         {/* A soft top/bottom vignette keeps text legible over any wash. */}
         <div
@@ -410,7 +452,7 @@ export function Scentuary({
               transform: "translateX(-50%)",
               top: 0,
               bottom: 0,
-              width: "min(78vw, 660px)",
+              width: ROAD_LANE,
               zIndex: 0,
               pointerEvents: "none",
             }}
@@ -437,8 +479,10 @@ export function Scentuary({
                 strokeLinecap="round"
                 fill="none"
               />
-              {/* Wide, soft halo that draws in with the core — the glow, done
-                  as a translucent wide stroke, never a per-frame filter. */}
+              {/* Wide, soft halo — a static, fully-drawn translucent stroke.
+                  Deliberately never dash-animated: repainting an 11px stroke
+                  every scroll frame was the dominant cause of the road's
+                  "stepping". Only the thin core below still draws in. */}
               <path
                 data-spine-halo
                 d={placeholderD}
@@ -482,8 +526,11 @@ export function Scentuary({
               position: "relative",
               zIndex: 1,
               display: "grid",
-              gridTemplateColumns: "1fr 1fr",
-              columnGap: "clamp(0.5rem, 3vw, 2rem)",
+              // A fixed central lane holds the road; notes live in the flexible
+              // columns either side of it, so a glyph or title is never placed
+              // over the drawn path — only ever to its left or right.
+              gridTemplateColumns: `minmax(0, 1fr) ${ROAD_LANE} minmax(0, 1fr)`,
+              columnGap: 0,
             }}
           >
             {stops.map((stop, i) =>
@@ -500,7 +547,7 @@ export function Scentuary({
                     gridRow: i + 1,
                     display: "flex",
                     justifyContent: "center",
-                    paddingBlock: "clamp(2.5rem, 7vh, 4.5rem)",
+                    paddingBlock: "clamp(3.5rem, 10vh, 6.5rem)",
                   }}
                 >
                   <TierStop tier={stop.tier} theme={theme} reduce={reduce} />
@@ -509,10 +556,10 @@ export function Scentuary({
                 <div
                   key={i}
                   style={{
-                    gridColumn: stop.side === "left" ? 1 : 2,
+                    gridColumn: stop.side === "left" ? 1 : 3,
                     gridRow: i + 1,
                     justifySelf: stop.side === "left" ? "end" : "start",
-                    paddingBlock: "clamp(2.75rem, 9vh, 6rem)",
+                    paddingBlock: "clamp(4rem, 13vh, 8.5rem)",
                   }}
                 >
                   <NoteStop
@@ -572,7 +619,7 @@ function IntroBlock({ theme, labels, reduce }: { theme: ScentuaryTheme; labels: 
         maxWidth: 760,
         margin: "0 auto",
         paddingInline: "clamp(2rem, 8vw, 6rem)",
-        paddingBlock: "clamp(4rem, 14vh, 8rem)",
+        paddingBlock: "clamp(4.5rem, 15vh, 9rem)",
         textAlign: "center",
         fontFamily: theme.fontDisplay,
       }}
@@ -611,7 +658,7 @@ function TierStop({ tier, theme, reduce }: { tier: ScentTier; theme: ScentuaryTh
     <motion.div
       initial={reduce ? false : { opacity: 0, y: 16 }}
       whileInView={reduce ? undefined : { opacity: 1, y: 0 }}
-      viewport={{ once: true, margin: "-20% 0px" }}
+      viewport={{ once: false, margin: "-20% 0px" }}
       transition={{ duration: 0.7, ease: EASE_OUT_EXPO }}
       style={{
         position: "relative",
@@ -688,7 +735,7 @@ function NoteStop({
     <motion.div
       initial={reduce ? false : { opacity: 0, x: side === "left" ? -26 : 26, y: 18 }}
       whileInView={reduce ? undefined : { opacity: 1, x: 0, y: 0 }}
-      viewport={{ once: true, margin: "-12% 0px" }}
+      viewport={{ once: false, margin: "-12% 0px" }}
       transition={{ duration: 0.8, ease: EASE_OUT_EXPO }}
       style={{
         position: "relative",
@@ -706,16 +753,24 @@ function NoteStop({
             so the mark reads clearly against any wash. The diffusion is baked
             into a multi-stop radial gradient rather than a CSS `blur()` filter,
             so it never forces a per-frame re-rasterisation as the journey
-            scrolls — the glow reads identically at zero compositing cost. */}
+            scrolls — the glow reads identically at zero compositing cost.
+            `screen` blend mode adds the light instead of compositing an
+            opaque disc, and the gradient reaches full transparency by 66% of
+            its radius, so it dissolves into the field with no visible edge. */}
         <div
           aria-hidden
           style={{
             position: "absolute",
-            height: "min(64vw, 340px)",
-            width: "min(64vw, 340px)",
+            height: "min(72vw, 400px)",
+            width: "min(72vw, 400px)",
             borderRadius: "9999px",
-            background: `radial-gradient(circle, ${tone.glow} 0%, ${tone.glow}66 26%, ${tone.glow}22 52%, transparent 76%)`,
-            opacity: 0.66,
+            // A long, low-contrast falloff that reaches full transparency well
+            // inside the box, with no alpha step — so the bloom melts into the
+            // field with no visible circular edge. `screen` adds light rather
+            // than compositing an opaque disc over the wash.
+            background: `radial-gradient(circle, ${tone.glow}59 0%, ${tone.glow}33 20%, ${tone.glow}1a 38%, ${tone.glow}0d 54%, transparent 76%)`,
+            mixBlendMode: "screen",
+            opacity: 0.9,
           }}
         />
         <div style={{ position: "relative" }}>
@@ -766,7 +821,7 @@ function ClosingBlock({ theme, labels, reduce }: { theme: ScentuaryTheme; labels
         maxWidth: 720,
         margin: "0 auto",
         paddingInline: "clamp(2rem, 8vw, 6rem)",
-        paddingBlock: "clamp(4rem, 14vh, 7rem)",
+        paddingBlock: "clamp(4.5rem, 15vh, 8rem)",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
